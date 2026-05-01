@@ -4,6 +4,7 @@ FastAPI + MongoDB (Motor async driver) workout tracking backend.
 
 ## Setup
 
+
 ```bash
 pip install -r requirements.txt
 ```
