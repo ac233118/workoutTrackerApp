@@ -25,7 +25,7 @@ python seed_exercises.py
 Start the server:
 
 ```bash
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
 Interactive docs available at: http://localhost:8000/docs
