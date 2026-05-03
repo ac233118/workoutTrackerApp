@@ -11,7 +11,7 @@ class Settings:
 
 
     # ── Google OAuth ──────────────────────────────────────────
-    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "4845622529-v8feuu0c14si12kf7qjnr588gdsf0vue.apps.googleusercontent.com")
 
     # ── JWT ───────────────────────────────────────────────────
     JWT_SECRET: str      = os.getenv("JWT_SECRET", "change-me-in-production")
