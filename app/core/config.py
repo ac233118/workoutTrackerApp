@@ -10,4 +10,13 @@ class Settings:
     )
 
 
+    # ── Google OAuth ──────────────────────────────────────────
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+
+    # ── JWT ───────────────────────────────────────────────────
+    JWT_SECRET: str      = os.getenv("JWT_SECRET", "change-me-in-production")
+    JWT_ALGORITHM: str   = os.getenv("JWT_ALGORITHM", "HS256")
+    JWT_EXPIRE_DAYS: int = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
+
+
 settings = Settings()
