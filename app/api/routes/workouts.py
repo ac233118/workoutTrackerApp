@@ -26,36 +26,86 @@ async def list_workouts(
     )
 
 
-@router.get("/streak", summary="Get current workout streak for the logged-in user")
-async def get_streak(
+@router.get("/home-stats", summary="Consolidated home screen stats for the logged-in user")
+async def get_home_stats(
     current_user: dict       = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
+    """
+    Returns in one call:
+    - streak          : current consecutive-day workout streak
+    - week            : which days this Mon–Sun week had workouts + count
+    - personal_records: top-5 all-time best sets per exercise (by weight)
+    """
     user_id = str(current_user["_id"])
-    cursor  = db.workouts.find({"user_id": user_id}, {"date": 1, "_id": 0})
+    today   = datetime.now(timezone.utc).date()
 
+    # ── 1. Fetch all workout dates (for streak + week dots) ───────────────────
+    cursor = db.workouts.find({"user_id": user_id}, {"date": 1, "_id": 0})
     workout_dates: set = set()
     async for doc in cursor:
         d = doc.get("date")
         if isinstance(d, datetime):
             workout_dates.add(d.date())
 
-    today = datetime.now(timezone.utc).date()
-
-    # Streak starts from today if worked out, otherwise from yesterday
+    # ── 2. Streak ─────────────────────────────────────────────────────────────
     if today in workout_dates:
-        start = today
+        streak_start = today
     elif (today - timedelta(days=1)) in workout_dates:
-        start = today - timedelta(days=1)
+        streak_start = today - timedelta(days=1)
     else:
-        return {"streak": 0}
+        streak_start = None
 
-    streak, current = 0, start
-    while current in workout_dates:
-        streak  += 1
-        current -= timedelta(days=1)
+    streak = 0
+    if streak_start:
+        cur = streak_start
+        while cur in workout_dates:
+            streak += 1
+            cur    -= timedelta(days=1)
 
-    return {"streak": streak}
+    # ── 3. Current week dots (Mon=0 … Sun=6) ──────────────────────────────────
+    monday = today - timedelta(days=today.weekday())
+    completed_days = sorted({
+        (d - monday).days
+        for d in workout_dates
+        if monday <= d <= today          # only days up to today
+        and 0 <= (d - monday).days <= 6
+    })
+
+    # ── 4. Personal records — top-5 best sets per exercise by weight ──────────
+    pr_pipeline = [
+        {"$match": {"user_id": user_id}},
+        {"$unwind": "$exercises"},
+        {"$unwind": "$exercises.sets"},
+        {"$match": {"exercises.sets.weight_kg": {"$gt": 0}}},
+        # After this sort, $first picks the heaviest set for each exercise
+        {"$sort": {"exercises.sets.weight_kg": -1}},
+        {"$group": {
+            "_id":             "$exercises.exercise_name",
+            "best_weight_kg":  {"$first": "$exercises.sets.weight_kg"},
+            "best_reps":       {"$first": "$exercises.sets.reps"},
+        }},
+        {"$sort": {"best_weight_kg": -1}},
+        {"$limit": 5},
+    ]
+    pr_cursor = db.workouts.aggregate(pr_pipeline)
+    personal_records = [
+        {
+            "exercise":       doc["_id"],
+            "best_weight_kg": doc["best_weight_kg"],
+            "best_reps":      doc.get("best_reps") or 0,
+        }
+        async for doc in pr_cursor
+    ]
+
+    return {
+        "streak": streak,
+        "week": {
+            "completed_days":  completed_days,
+            "workouts_done":   len(completed_days),
+        },
+        "personal_records": personal_records,
+    }
 
 
 @router.get("/{workout_id}/pdf", summary="Download a workout as a styled PDF")
