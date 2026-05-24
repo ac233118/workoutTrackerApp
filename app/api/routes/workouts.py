@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db.mongo import get_db
@@ -23,6 +24,38 @@ async def list_workouts(
     return await workout_service.list_workouts(
         db, user_id=user_id, category=category, skip=skip, limit=limit
     )
+
+
+@router.get("/streak", summary="Get current workout streak for the logged-in user")
+async def get_streak(
+    current_user: dict       = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    user_id = str(current_user["_id"])
+    cursor  = db.workouts.find({"user_id": user_id}, {"date": 1, "_id": 0})
+
+    workout_dates: set = set()
+    async for doc in cursor:
+        d = doc.get("date")
+        if isinstance(d, datetime):
+            workout_dates.add(d.date())
+
+    today = datetime.now(timezone.utc).date()
+
+    # Streak starts from today if worked out, otherwise from yesterday
+    if today in workout_dates:
+        start = today
+    elif (today - timedelta(days=1)) in workout_dates:
+        start = today - timedelta(days=1)
+    else:
+        return {"streak": 0}
+
+    streak, current = 0, start
+    while current in workout_dates:
+        streak  += 1
+        current -= timedelta(days=1)
+
+    return {"streak": streak}
 
 
 @router.get("/{workout_id}/pdf", summary="Download a workout as a styled PDF")
