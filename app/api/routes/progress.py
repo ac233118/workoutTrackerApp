@@ -100,24 +100,28 @@ async def get_progress(
         })
 
     # ── 2. by_muscle ──────────────────────────────────────────────────────────
-    # Join workouts → exercises collection to get category / muscle_groups
+    # exercise_name is already denormalized on every workout exercise, so
+    # look up the catalog by name — avoids ObjectId conversion issues entirely.
     muscle_pipeline = [
         {"$match": {"user_id": user_id}},
         {"$unwind": "$exercises"},
         {"$unwind": "$exercises.sets"},
-        # Convert exercise_id string → ObjectId for the lookup
-        {"$addFields": {
-            "ex_oid": {"$toObjectId": "$exercises.exercise_id"}
-        }},
         {"$lookup": {
-            "from":         "exercises",
-            "localField":   "ex_oid",
-            "foreignField": "_id",
-            "as":           "catalog",
+            "from": "exercises",
+            "let":  {"ex_name": "$exercises.exercise_name"},
+            "pipeline": [
+                {"$match": {"$expr": {"$eq": ["$name", "$$ex_name"]}}},
+                {"$project": {"category": 1, "_id": 0}},
+            ],
+            "as": "catalog",
         }},
-        {"$unwind": {"path": "$catalog", "preserveNullAndEmpty": True}},
         {"$addFields": {
-            "muscle_group": {"$ifNull": ["$catalog.category", "Other"]}
+            "muscle_group": {
+                "$ifNull": [
+                    {"$arrayElemAt": ["$catalog.category", 0]},
+                    "Other",
+                ]
+            }
         }},
         {"$group": {
             "_id":              "$muscle_group",
