@@ -153,3 +153,119 @@ async def get_progress(
         "by_exercise": by_exercise,
         "by_muscle":   by_muscle,
     }
+
+
+@router.get("/muscle/{muscle_group}", summary="Muscle group detail — weekly trend + sub-muscle breakdown")
+async def get_muscle_detail(
+    muscle_group: str,
+    current_user: dict       = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Returns:
+      weekly_trend  — 12-week volume trend (oldest → newest)
+      sub_muscles   — per-sub-muscle: total sets + volume
+    """
+    user_id = str(current_user["_id"])
+    today   = datetime.now(timezone.utc).date()
+    week_start = today - timedelta(days=today.weekday())
+    twelve_weeks_ago = week_start - timedelta(weeks=11)
+    base_date = datetime(
+        twelve_weeks_ago.year, twelve_weeks_ago.month, twelve_weeks_ago.day,
+        tzinfo=timezone.utc,
+    )
+
+    # Steps shared by both sub-pipelines:
+    # unwind → lookup catalog → filter by this muscle_group
+    common_steps = [
+        {"$match": {"user_id": user_id}},
+        {"$unwind": "$exercises"},
+        {"$unwind": "$exercises.sets"},
+        {"$lookup": {
+            "from": "exercises",
+            "let":  {"ex_name": "$exercises.exercise_name"},
+            "pipeline": [
+                {"$match": {"$expr": {"$eq": ["$name", "$$ex_name"]}}},
+                {"$project": {"category": 1, "muscle_groups": 1, "_id": 0}},
+            ],
+            "as": "catalog",
+        }},
+        {"$addFields": {
+            "cat_doc": {"$arrayElemAt": ["$catalog", 0]},
+        }},
+        {"$addFields": {
+            "muscle_group":      {"$ifNull": ["$cat_doc.category",      "Other"]},
+            "sub_muscle_groups": {"$ifNull": ["$cat_doc.muscle_groups", []]},
+        }},
+        {"$match": {"muscle_group": muscle_group}},
+    ]
+
+    # ── 1. Weekly volume trend (12 weeks) ─────────────────────────────────────
+    trend_pipeline = common_steps + [
+        {"$match": {"date": {"$gte": base_date}}},
+        {"$addFields": {
+            "week_offset": {
+                "$floor": {
+                    "$divide": [
+                        {"$subtract": ["$date", base_date]},
+                        1000 * 60 * 60 * 24 * 7,
+                    ]
+                }
+            },
+            "set_vol": {
+                "$multiply": [
+                    {"$ifNull": ["$exercises.sets.weight_kg", 0]},
+                    {"$ifNull": ["$exercises.sets.reps",      0]},
+                ]
+            },
+        }},
+        {"$group": {
+            "_id":       "$week_offset",
+            "volume_kg": {"$sum": "$set_vol"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+
+    week_vol: dict[int, float] = {i: 0.0 for i in range(12)}
+    async for doc in db.workouts.aggregate(trend_pipeline):
+        w = int(doc["_id"])
+        if 0 <= w <= 11:
+            week_vol[w] = round(doc["volume_kg"], 1)
+
+    weekly_trend = []
+    for i in range(12):
+        week_date = twelve_weeks_ago + timedelta(weeks=i)
+        weekly_trend.append({
+            "week_label": week_date.strftime("%b %d"),
+            "volume_kg":  week_vol[i],
+        })
+
+    # ── 2. Sub-muscle breakdown ───────────────────────────────────────────────
+    sub_pipeline = common_steps + [
+        {"$unwind": {"path": "$sub_muscle_groups", "preserveNullAndEmptyArrays": False}},
+        {"$group": {
+            "_id":            "$sub_muscle_groups",
+            "total_sets":     {"$sum": 1},
+            "total_volume_kg": {"$sum": {
+                "$multiply": [
+                    {"$ifNull": ["$exercises.sets.weight_kg", 0]},
+                    {"$ifNull": ["$exercises.sets.reps",      0]},
+                ]
+            }},
+        }},
+        {"$sort": {"total_volume_kg": -1}},
+    ]
+
+    sub_muscles = []
+    async for doc in db.workouts.aggregate(sub_pipeline):
+        sub_muscles.append({
+            "name":            doc["_id"],
+            "total_sets":      doc["total_sets"],
+            "total_volume_kg": round(doc["total_volume_kg"], 1),
+        })
+
+    return {
+        "muscle_group": muscle_group,
+        "weekly_trend": weekly_trend,
+        "sub_muscles":  sub_muscles,
+    }
