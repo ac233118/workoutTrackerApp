@@ -197,6 +197,27 @@ async def mobile_create_template(
     return _to_mobile_response(doc)
 
 
+async def mobile_update_template(
+    db: AsyncIOMotorDatabase,
+    template_id: int,
+    user_id: str,
+    name: str,
+    emoji: str,
+    exercises: list[str],
+) -> dict | None:
+    """Returns updated doc or None if not found / not owned by user."""
+    result = await db.templates.find_one_and_update(
+        {"template_id": template_id, "deleted_at": None, "user_id": user_id},
+        {"$set": {
+            "name":           name,
+            "emoji":          emoji,
+            "exercise_names": exercises[:10],
+        }},
+        return_document=True,
+    )
+    return _to_mobile_response(result) if result else None
+
+
 async def mobile_mark_used(
     db: AsyncIOMotorDatabase, template_id: int
 ) -> bool:

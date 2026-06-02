@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db.mongo import get_db
 from app.core.dependencies import get_current_user, get_optional_user
-from app.schemas.template import MobileCreateTemplateRequest
+from app.schemas.template import MobileCreateTemplateRequest, MobileUpdateTemplateRequest
 from app.services import template_service
 
 router = APIRouter(prefix="/api/templates", tags=["Mobile Templates"])
@@ -28,6 +28,27 @@ async def create_template(
 ):
     user_id = str(current_user["_id"])
     return await template_service.mobile_create_template(db, payload, user_id=user_id)
+
+
+@router.put("/{template_id}", status_code=200, summary="Update a custom template")
+async def update_template(
+    template_id: int,
+    payload: MobileUpdateTemplateRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = str(current_user["_id"])
+    updated = await template_service.mobile_update_template(
+        db,
+        template_id=template_id,
+        user_id=user_id,
+        name=payload.name,
+        emoji=payload.emoji,
+        exercises=payload.exercises,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Template not found or not yours to edit")
+    return updated
 
 
 @router.put("/{template_id}/used", status_code=200, summary="Mark template as used")

@@ -32,7 +32,13 @@ class CreateTemplateRequest(BaseModel):
 class MobileCreateTemplateRequest(BaseModel):
     name:      str
     emoji:     str
-    exercises: list[str] = Field(..., min_length=1, max_length=6)
+    exercises: list[str] = Field(..., min_length=1, max_length=10)
+
+
+class MobileUpdateTemplateRequest(BaseModel):
+    name:      str
+    emoji:     str
+    exercises: list[str] = Field(..., min_length=1, max_length=10)
 
 
 class MobileTemplateResponse(BaseModel):
