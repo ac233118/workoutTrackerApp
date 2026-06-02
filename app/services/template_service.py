@@ -150,6 +150,7 @@ def _to_mobile_response(doc: dict) -> dict:
         "emoji":     doc["emoji"],
         "lastDone":  _last_done_str(doc.get("last_used_at")),
         "exercises": doc.get("exercise_names", [])[:6],
+        "isCustom":  doc.get("user_id") is not None,
     }
 
 
@@ -160,23 +161,37 @@ async def _next_template_id(db: AsyncIOMotorDatabase) -> int:
     return (last["template_id"] + 1) if last else 1
 
 
-async def mobile_list_templates(db: AsyncIOMotorDatabase) -> list[dict]:
-    cursor = db.templates.find({"deleted_at": None}).sort("template_id", 1)
+async def mobile_list_templates(
+    db: AsyncIOMotorDatabase,
+    user_id: Optional[str] = None,
+) -> list[dict]:
+    # Return system templates (user_id=None) + user's own templates
+    if user_id:
+        query = {
+            "deleted_at": None,
+            "$or": [{"user_id": None}, {"user_id": user_id}],
+        }
+    else:
+        query = {"deleted_at": None, "user_id": None}
+
+    cursor = db.templates.find(query).sort("template_id", 1)
     return [_to_mobile_response(doc) async for doc in cursor]
 
 
 async def mobile_create_template(
-    db: AsyncIOMotorDatabase, payload: MobileCreateTemplateRequest
+    db: AsyncIOMotorDatabase,
+    payload: MobileCreateTemplateRequest,
+    user_id: str,
 ) -> dict:
     doc = {
         "template_id":    await _next_template_id(db),
         "name":           payload.name,
         "emoji":          payload.emoji,
-        "exercise_names": payload.exercises[:6],
+        "exercise_names": payload.exercises[:10],
         "last_used_at":   None,
         "deleted_at":     None,
         "created_at":     datetime.now(timezone.utc),
-        "user_id":        None,
+        "user_id":        user_id,
     }
     await db.templates.insert_one(doc)
     return _to_mobile_response(doc)
@@ -193,10 +208,13 @@ async def mobile_mark_used(
 
 
 async def mobile_delete_template(
-    db: AsyncIOMotorDatabase, template_id: int
+    db: AsyncIOMotorDatabase,
+    template_id: int,
+    user_id: str,
 ) -> bool:
+    # Only the owner can delete their custom template
     result = await db.templates.update_one(
-        {"template_id": template_id, "deleted_at": None},
+        {"template_id": template_id, "deleted_at": None, "user_id": user_id},
         {"$set": {"deleted_at": datetime.now(timezone.utc)}},
     )
     return result.matched_count > 0
