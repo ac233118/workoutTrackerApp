@@ -220,24 +220,31 @@ async def get_muscle_detail(
             },
         }},
         {"$group": {
-            "_id":       "$week_offset",
-            "volume_kg": {"$sum": "$set_vol"},
+            "_id":        "$week_offset",
+            "volume_kg":  {"$sum": "$set_vol"},
+            # Collect (date, workout_id) pairs so we can sort by date
+            "workouts":   {"$addToSet": {"id": {"$toString": "$_id"}, "date": "$date"}},
         }},
         {"$sort": {"_id": 1}},
     ]
 
-    week_vol: dict[int, float] = {i: 0.0 for i in range(12)}
+    week_vol:        dict[int, float]     = {i: 0.0  for i in range(12)}
+    week_workout_ids: dict[int, list[str]] = {i: []   for i in range(12)}
     async for doc in db.workouts.aggregate(trend_pipeline):
         w = int(doc["_id"])
         if 0 <= w <= 11:
             week_vol[w] = round(doc["volume_kg"], 1)
+            # Sort workouts newest-first so index 0 = most recent
+            sorted_wk = sorted(doc["workouts"], key=lambda x: x["date"], reverse=True)
+            week_workout_ids[w] = [x["id"] for x in sorted_wk]
 
     weekly_trend = []
     for i in range(12):
         week_date = twelve_weeks_ago + timedelta(weeks=i)
         weekly_trend.append({
-            "week_label": week_date.strftime("%b %d"),
-            "volume_kg":  week_vol[i],
+            "week_label":  week_date.strftime("%b %d"),
+            "volume_kg":   week_vol[i],
+            "workout_ids": week_workout_ids[i],   # newest first
         })
 
     # ── 2. Sub-muscle breakdown ───────────────────────────────────────────────
