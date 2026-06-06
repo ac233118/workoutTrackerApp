@@ -155,6 +155,50 @@ async def get_progress(
     }
 
 
+@router.get("/exercise-prs", summary="PR for a list of exercise names")
+async def get_exercise_prs(
+    names: str,                              # comma-separated exercise names
+    current_user: dict       = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Returns the best (weight_kg, reps) the user has ever logged
+    for each requested exercise name.  Exercises with no history are omitted.
+    """
+    user_id      = str(current_user["_id"])
+    name_list    = [n.strip() for n in names.split(",") if n.strip()]
+
+    pipeline = [
+        {"$match": {"user_id": user_id}},
+        {"$unwind": "$exercises"},
+        {"$match": {"exercises.exercise_name": {"$in": name_list}}},
+        {"$unwind": "$exercises.sets"},
+        {"$match": {"exercises.sets.weight_kg": {"$gt": 0}}},
+        {"$group": {
+            "_id":            "$exercises.exercise_name",
+            "best_weight_kg": {"$max": "$exercises.sets.weight_kg"},
+            "all_sets":       {"$push": {
+                "w": "$exercises.sets.weight_kg",
+                "r": "$exercises.sets.reps",
+            }},
+        }},
+    ]
+
+    result: dict[str, dict] = {}
+    async for doc in db.workouts.aggregate(pipeline):
+        max_w     = doc["best_weight_kg"]
+        best_reps = max(
+            (s["r"] for s in doc["all_sets"] if s["w"] == max_w and s.get("r")),
+            default=0,
+        )
+        result[doc["_id"]] = {
+            "weight_kg": max_w,
+            "reps":      best_reps,
+        }
+
+    return result
+
+
 @router.get("/muscle/{muscle_group}", summary="Muscle group detail — weekly trend + sub-muscle breakdown")
 async def get_muscle_detail(
     muscle_group: str,
