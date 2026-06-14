@@ -40,7 +40,20 @@ async def list_exercises(
     if len(query["$and"]) == 1:
         query = query["$and"][0]
 
-    cursor = db.exercises.find(query).skip(skip).limit(limit)
+    # When authenticated, surface the user's custom exercises first
+    if user_id:
+        pipeline = [
+            {"$match": query},
+            {"$addFields": {"_is_mine": {"$eq": ["$user_id", user_id]}}},
+            {"$sort": {"_is_mine": -1, "name": 1}},
+            {"$skip": skip},
+            {"$limit": limit},
+            {"$project": {"_is_mine": 0}},
+        ]
+        cursor = db.exercises.aggregate(pipeline)
+    else:
+        cursor = db.exercises.find(query).sort("name", 1).skip(skip).limit(limit)
+
     data   = [_serialize(doc) async for doc in cursor]
     total  = await db.exercises.count_documents(query)
     return {"total": total, "skip": skip, "limit": limit, "data": data}
