@@ -30,7 +30,7 @@ async def list_exercises(
     muscle_group: Optional[str] = Query(None),
     difficulty:   Optional[str] = Query(None),
     skip:         int           = Query(0,  ge=0),
-    limit:        int           = Query(50, ge=1, le=200),
+    limit:        int           = Query(50, ge=1, le=500),
     db: AsyncIOMotorDatabase    = Depends(get_db),
     current_user: Optional[dict] = Depends(get_optional_user),
 ):
