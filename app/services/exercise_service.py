@@ -78,6 +78,7 @@ async def create_custom_exercise(
     equipment:     str,
     difficulty:    str,
     instructions:  str,
+    tracking_type: str = "weighted",
 ) -> dict:
     doc = {
         "name":          name,
@@ -86,6 +87,7 @@ async def create_custom_exercise(
         "equipment":     equipment,
         "difficulty":    difficulty,
         "instructions":  instructions,
+        "tracking_type": tracking_type,
         "user_id":       user_id,       # marks this as a custom exercise
         "created_at":    datetime.now(timezone.utc),
     }

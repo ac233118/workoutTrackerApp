@@ -9,7 +9,8 @@ from app.services import exercise_service
 
 router = APIRouter(prefix="/exercises", tags=["Exercises"])
 
-VALID_DIFFICULTIES = {"Beginner", "Intermediate", "Advanced"}
+VALID_DIFFICULTIES   = {"Beginner", "Intermediate", "Advanced"}
+VALID_TRACKING_TYPES = {"weighted", "bodyweight", "timed", "weighted_timed"}
 
 
 class CreateExerciseRequest(BaseModel):
@@ -19,6 +20,7 @@ class CreateExerciseRequest(BaseModel):
     equipment:     str       = "Other"
     difficulty:    str       = "Beginner"
     instructions:  str       = ""
+    tracking_type: str       = "weighted"   # weighted | bodyweight | timed | weighted_timed
 
 
 @router.get("", summary="Browse the exercise catalog (public + user's custom)")
@@ -56,6 +58,8 @@ async def create_exercise(
         raise HTTPException(status_code=400, detail="Exercise name is required")
     if payload.difficulty not in VALID_DIFFICULTIES:
         raise HTTPException(status_code=400, detail=f"difficulty must be one of {VALID_DIFFICULTIES}")
+    if payload.tracking_type not in VALID_TRACKING_TYPES:
+        raise HTTPException(status_code=400, detail=f"tracking_type must be one of {VALID_TRACKING_TYPES}")
 
     # Prevent duplicates for this user
     existing = await db.exercises.find_one({
@@ -74,6 +78,7 @@ async def create_exercise(
         equipment     = payload.equipment.strip() or "Other",
         difficulty    = payload.difficulty,
         instructions  = payload.instructions.strip(),
+        tracking_type = payload.tracking_type,
     )
     return doc
 

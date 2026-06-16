@@ -27,14 +27,16 @@ async def get_progress(
     eight_weeks_ago = week_start - timedelta(weeks=7)             # 8 weeks total
 
     # ── 1. by_exercise ────────────────────────────────────────────────────────
-    # For each exercise: PR set, lifetime totals, 8-week weekly trend
+    # Look up tracking_type for all exercises in catalog
+    ex_type_map: dict[str, str] = {}
+    async for ex in db.exercises.find({}, {"name": 1, "tracking_type": 1}):
+        ex_type_map[ex["name"]] = ex.get("tracking_type", "weighted")
+
     exercise_pipeline = [
         {"$match": {"user_id": user_id}},
         {"$unwind": "$exercises"},
         {"$unwind": "$exercises.sets"},
-        {"$match": {"exercises.sets.weight_kg": {"$gt": 0}}},
         {"$addFields": {
-            # Week bucket: ISO string "YYYY-Www" for grouping
             "week_offset": {
                 "$floor": {
                     "$divide": [
@@ -45,58 +47,83 @@ async def get_progress(
             },
         }},
         {"$group": {
-            "_id":             "$exercises.exercise_name",
-            # PR: best weight × reps
-            "best_weight_kg":  {"$max": "$exercises.sets.weight_kg"},
-            "total_sets":      {"$sum": 1},
-            "total_volume_kg": {"$sum": {"$multiply": [
-                {"$ifNull": ["$exercises.sets.weight_kg", 0]},
-                {"$ifNull": ["$exercises.sets.reps", 0]},
-            ]}},
-            # Collect (week_offset, volume) pairs for the trend
-            "weekly_sets_raw": {"$push": {
+            "_id":        "$exercises.exercise_name",
+            "total_sets": {"$sum": 1},
+            "all_sets_raw": {"$push": {
                 "w":   "$week_offset",
-                "vol": {"$multiply": [
-                    {"$ifNull": ["$exercises.sets.weight_kg", 0]},
-                    {"$ifNull": ["$exercises.sets.reps", 0]},
-                ]},
-            }},
-            # Grab reps from the heaviest set (approximation via sort not possible here,
-            # so we collect all and pick post-aggregation)
-            "all_reps_at_max": {"$push": {
-                "w": "$exercises.sets.weight_kg",
-                "r": "$exercises.sets.reps",
+                "weight_kg":    "$exercises.sets.weight_kg",
+                "reps":         "$exercises.sets.reps",
+                "duration_sec": "$exercises.sets.duration_sec",
             }},
         }},
-        {"$sort": {"total_volume_kg": -1}},
+        {"$sort": {"total_sets": -1}},
         {"$limit": 20},
     ]
 
     ex_cursor = db.workouts.aggregate(exercise_pipeline)
     by_exercise = []
     async for doc in ex_cursor:
-        # Build 8-week trend (weeks 0–7, 0 = 8 weeks ago)
+        ex_name = doc["_id"]
+        tt      = ex_type_map.get(ex_name, "weighted")
+        sets    = doc["all_sets_raw"]
+
         weekly_vol: dict[int, float] = {i: 0.0 for i in range(8)}
-        for item in doc["weekly_sets_raw"]:
-            w = int(item["w"])
-            if 0 <= w <= 7:
-                weekly_vol[w] = weekly_vol.get(w, 0.0) + item["vol"]
+
+        if tt == "weighted":
+            valid = [s for s in sets if s.get("weight_kg") and s["weight_kg"] > 0]
+            if not valid: continue
+            for s in valid:
+                w = int(s["w"]) if s.get("w") is not None else -1
+                if 0 <= w <= 7:
+                    weekly_vol[w] += (s["weight_kg"] or 0) * (s.get("reps") or 0)
+            max_w     = max(s["weight_kg"] for s in valid)
+            best_reps = max((s.get("reps", 0) for s in valid if s["weight_kg"] == max_w), default=0)
+            pr = {"pr_weight_kg": max_w, "pr_reps": best_reps}
+            total_vol = sum((s["weight_kg"] or 0) * (s.get("reps") or 0) for s in valid)
+
+        elif tt == "bodyweight":
+            valid = [s for s in sets if s.get("reps") and s["reps"] > 0]
+            if not valid: continue
+            for s in valid:
+                w = int(s["w"]) if s.get("w") is not None else -1
+                if 0 <= w <= 7:
+                    weekly_vol[w] += s.get("reps") or 0
+            pr = {"pr_reps": max(s["reps"] for s in valid)}
+            total_vol = sum(s.get("reps", 0) for s in valid)
+
+        elif tt == "timed":
+            valid = [s for s in sets if s.get("duration_sec") and s["duration_sec"] > 0]
+            if not valid: continue
+            for s in valid:
+                w = int(s["w"]) if s.get("w") is not None else -1
+                if 0 <= w <= 7:
+                    weekly_vol[w] += s.get("duration_sec") or 0
+            pr = {"pr_duration_sec": max(s["duration_sec"] for s in valid)}
+            total_vol = sum(s.get("duration_sec", 0) for s in valid)
+
+        elif tt == "weighted_timed":
+            valid = [s for s in sets if s.get("weight_kg") and s["weight_kg"] > 0]
+            if not valid: continue
+            for s in valid:
+                w = int(s["w"]) if s.get("w") is not None else -1
+                if 0 <= w <= 7:
+                    weekly_vol[w] += (s["weight_kg"] or 0) * (s.get("duration_sec") or 0)
+            max_w    = max(s["weight_kg"] for s in valid)
+            best_dur = max((s.get("duration_sec", 0) for s in valid if s["weight_kg"] == max_w), default=0)
+            pr = {"pr_weight_kg": max_w, "pr_duration_sec": best_dur}
+            total_vol = sum((s["weight_kg"] or 0) * (s.get("duration_sec") or 0) for s in valid)
+
+        else:
+            continue
+
         trend = [round(weekly_vol[i], 1) for i in range(8)]
-
-        # Best reps at PR weight
-        max_w = doc["best_weight_kg"]
-        best_reps = max(
-            (r["r"] for r in doc["all_reps_at_max"] if r["w"] == max_w and r["r"]),
-            default=0,
-        )
-
         by_exercise.append({
-            "exercise":        doc["_id"],
-            "pr_weight_kg":    max_w,
-            "pr_reps":         best_reps,
-            "total_sets":      doc["total_sets"],
-            "total_volume_kg": round(doc["total_volume_kg"], 1),
-            "weekly_volume_trend": trend,   # list[float], index 0 = 8 weeks ago
+            "exercise":            ex_name,
+            "tracking_type":       tt,
+            "total_sets":          doc["total_sets"],
+            "total_volume":        round(total_vol, 1),
+            "weekly_volume_trend": trend,
+            **pr,
         })
 
     # ── 2. by_muscle ──────────────────────────────────────────────────────────
@@ -162,39 +189,69 @@ async def get_exercise_prs(
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """
-    Returns the best (weight_kg, reps) the user has ever logged
-    for each requested exercise name.  Exercises with no history are omitted.
+    Returns the PR for each requested exercise name, shaped by tracking_type:
+      weighted       → { tracking_type, weight_kg, reps }
+      bodyweight     → { tracking_type, reps }
+      timed          → { tracking_type, duration_sec }
+      weighted_timed → { tracking_type, weight_kg, duration_sec }
+    Exercises with no history are omitted.
     """
-    user_id      = str(current_user["_id"])
-    name_list    = [n.strip() for n in names.split(",") if n.strip()]
+    user_id   = str(current_user["_id"])
+    name_list = [n.strip() for n in names.split(",") if n.strip()]
 
+    # Look up tracking_type for each exercise from the catalog
+    type_map: dict[str, str] = {}
+    async for ex in db.exercises.find(
+        {"name": {"$in": name_list}},
+        {"name": 1, "tracking_type": 1},
+    ):
+        type_map[ex["name"]] = ex.get("tracking_type", "weighted")
+
+    # Aggregate all sets for these exercises
     pipeline = [
         {"$match": {"user_id": user_id}},
         {"$unwind": "$exercises"},
         {"$match": {"exercises.exercise_name": {"$in": name_list}}},
         {"$unwind": "$exercises.sets"},
-        {"$match": {"exercises.sets.weight_kg": {"$gt": 0}}},
         {"$group": {
-            "_id":            "$exercises.exercise_name",
-            "best_weight_kg": {"$max": "$exercises.sets.weight_kg"},
-            "all_sets":       {"$push": {
-                "w": "$exercises.sets.weight_kg",
-                "r": "$exercises.sets.reps",
+            "_id":      "$exercises.exercise_name",
+            "all_sets": {"$push": {
+                "weight_kg":    "$exercises.sets.weight_kg",
+                "reps":         "$exercises.sets.reps",
+                "duration_sec": "$exercises.sets.duration_sec",
             }},
         }},
     ]
 
     result: dict[str, dict] = {}
     async for doc in db.workouts.aggregate(pipeline):
-        max_w     = doc["best_weight_kg"]
-        best_reps = max(
-            (s["r"] for s in doc["all_sets"] if s["w"] == max_w and s.get("r")),
-            default=0,
-        )
-        result[doc["_id"]] = {
-            "weight_kg": max_w,
-            "reps":      best_reps,
-        }
+        ex_name  = doc["_id"]
+        tt       = type_map.get(ex_name, "weighted")
+        sets     = doc["all_sets"]
+
+        if tt == "weighted":
+            valid = [s for s in sets if s.get("weight_kg") and s["weight_kg"] > 0]
+            if not valid: continue
+            max_w = max(s["weight_kg"] for s in valid)
+            best_reps = max((s["reps"] for s in valid if s["weight_kg"] == max_w and s.get("reps")), default=0)
+            result[ex_name] = {"tracking_type": tt, "weight_kg": max_w, "reps": best_reps}
+
+        elif tt == "bodyweight":
+            valid = [s for s in sets if s.get("reps") and s["reps"] > 0]
+            if not valid: continue
+            result[ex_name] = {"tracking_type": tt, "reps": max(s["reps"] for s in valid)}
+
+        elif tt == "timed":
+            valid = [s for s in sets if s.get("duration_sec") and s["duration_sec"] > 0]
+            if not valid: continue
+            result[ex_name] = {"tracking_type": tt, "duration_sec": max(s["duration_sec"] for s in valid)}
+
+        elif tt == "weighted_timed":
+            valid = [s for s in sets if s.get("weight_kg") and s["weight_kg"] > 0]
+            if not valid: continue
+            max_w = max(s["weight_kg"] for s in valid)
+            best_dur = max((s.get("duration_sec", 0) for s in valid if s["weight_kg"] == max_w), default=0)
+            result[ex_name] = {"tracking_type": tt, "weight_kg": max_w, "duration_sec": best_dur}
 
     return result
 
